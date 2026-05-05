@@ -137,8 +137,12 @@ export default function AdminPanel() {
 
   async function baixarPDF(rel) {
     showToast('⏳ Gerando PDF...')
-    const doc = await gerarPDFRelatorio(rel, { supabase })
-    doc.save(`relatorio-orofly-${rel.cliente?.replace(/\s+/g,'-').toLowerCase()}-${new Date(rel.created_at).toLocaleDateString('pt-BR').replace(/\//g,'-')}.pdf`)
+    // Recarrega do banco para garantir foto_mapa_url e obs_fotos_urls atualizados
+    const { data: relAtual } = await supabase
+      .from('relatorios').select('*').eq('id', rel.id).single()
+    const relFinal = relAtual || rel
+    const doc = await gerarPDFRelatorio(relFinal, { supabase })
+    doc.save(`relatorio-orofly-${relFinal.cliente?.replace(/\s+/g,'-').toLowerCase()}-${new Date(relFinal.created_at).toLocaleDateString('pt-BR').replace(/\//g,'-')}.pdf`)
     showToast('✅ PDF baixado!')
   }
 
@@ -207,6 +211,7 @@ export default function AdminPanel() {
             </div>
           </div>
           <button style={s.logoutBtn} onClick={signOut}>Sair</button>
+          <div style={{textAlign:'center',fontSize:10,color:'#2d4a38',marginTop:10,letterSpacing:1}}>v1.15</div>
         </div>
       </aside>
 
@@ -600,10 +605,10 @@ function ExistingPhoto({ supabase, path, bucket, label, small }) {
     <div style={{position:'relative'}}>
       <img src={url} alt="foto" style={{width:'100%', maxHeight: small?60:120, objectFit:'cover', borderRadius:8}} />
       {!small && (
-        <a href={url} download target="_blank" rel="noreferrer"
-          style={{position:'absolute',top:6,right:6,background:'rgba(0,0,0,0.6)',color:'#fff',borderRadius:6,padding:'3px 8px',fontSize:11,textDecoration:'none'}}
+        <a href={url} target="_blank" rel="noreferrer"
+          style={{position:'absolute',top:6,right:6,background:'rgba(0,0,0,0.65)',color:'#fff',borderRadius:6,padding:'3px 8px',fontSize:11,textDecoration:'none',cursor:'pointer'}}
           onClick={e=>e.stopPropagation()}>
-          ⬇ baixar
+          🔍 ver foto
         </a>
       )}
       <div style={{fontSize:10,color:'#1a7a4a',marginTop:4}}>Foto atual — clique na área para trocar</div>
