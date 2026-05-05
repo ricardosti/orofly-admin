@@ -22,7 +22,7 @@ export default function AdminPanel() {
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState('')
   const [filters, setFilters] = useState({ cliente:'', piloto:'', drone:'', status:'', dataIni:'', dataFim:'' })
-  const [newUser, setNewUser] = useState({ nome:'', email:'', senha:'', role:'piloto' })
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [criandoUser, setCriandoUser] = useState(false)
 
   const showToast = useCallback((msg, type='success') => {
@@ -172,8 +172,44 @@ export default function AdminPanel() {
 
   return (
     <div style={s.shell}>
-      {/* SIDEBAR */}
-      <aside style={s.sidebar}>
+      <style>{`
+        @media (max-width: 768px) {
+          .orofly-sidebar { display: none !important; }
+          .orofly-mobile-header { display: flex !important; }
+          .orofly-page { padding: 12px !important; }
+          .orofly-filter-bar { flex-direction: column !important; }
+          .orofly-filter-bar input, .orofly-filter-bar select { min-width: 0 !important; width: 100% !important; }
+          .orofly-table-wrap { overflow-x: auto !important; font-size: 11px !important; }
+          .orofly-table th, .orofly-table td { padding: 8px !important; font-size: 11px !important; }
+          .orofly-detail-row { flex-direction: column !important; }
+          .orofly-users-layout { flex-direction: column !important; }
+          .orofly-create-card { width: 100% !important; }
+          .orofly-modal { border-radius: 0 !important; width: 100vw !important; max-width: 100vw !important; max-height: 100vh !important; height: 100vh !important; }
+          .orofly-modal-grid { grid-template-columns: 1fr 1fr !important; }
+          .orofly-cond-grid { grid-template-columns: 1fr 1fr !important; }
+          .orofly-main { flex-direction: column !important; }
+        }
+        @media (min-width: 769px) {
+          .orofly-mobile-header { display: none !important; }
+          .orofly-main { flex-direction: row !important; }
+        }
+      `}</style>
+      <div className="orofly-mobile-header" style={s.mobileHeader}>
+        <div style={s.logo}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2da05e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <span style={s.logoTxt}>Orofly<span style={{color:'#f0c040'}}>.</span></span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <div style={{display:'flex',gap:8}}>
+            <button style={{...s.navBtn,...(tab==='relatorios'?{color:'#fff',background:'#1a3a22'}:{})}} onClick={()=>{setTab('relatorios');setMobileMenuOpen(false)}}>📋</button>
+            <button style={{...s.navBtn,...(tab==='pilotos'?{color:'#fff',background:'#1a3a22'}:{})}} onClick={()=>{setTab('pilotos');setMobileMenuOpen(false)}}>👥</button>
+          </div>
+          <button style={{background:'transparent',border:'1px solid #2d4a38',color:'#8aad94',borderRadius:8,padding:'6px 10px',cursor:'pointer',fontSize:12}} onClick={signOut}>Sair</button>
+        </div>
+      </div>
+
+      {/* SIDEBAR DESKTOP */}
+      <aside className="orofly-sidebar" style={s.sidebar}>
         <div style={s.sidebarTop}>
           <div style={s.logo}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2da05e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -211,16 +247,16 @@ export default function AdminPanel() {
             </div>
           </div>
           <button style={s.logoutBtn} onClick={signOut}>Sair</button>
-          <div style={{textAlign:'center',fontSize:10,color:'#2d4a38',marginTop:10,letterSpacing:1}}>v1.15</div>
+          <div style={{textAlign:'center',fontSize:10,color:'#2d4a38',marginTop:10,letterSpacing:1}}>v1.16</div>
         </div>
       </aside>
 
       {/* MAIN */}
-      <main style={s.main}>
+      <main className="orofly-main" style={{...s.main}} >
 
         {/* RELATÓRIOS */}
         {tab==='relatorios' && (
-          <div style={s.page}>
+          <div className="orofly-page" style={s.page}>
             <div style={s.pageHeader}>
               <div>
                 <div style={s.pageTitle}>Relatórios de Voo</div>
@@ -229,7 +265,7 @@ export default function AdminPanel() {
             </div>
 
             {/* FILTROS */}
-            <div style={s.filterBar}>
+            <div className="orofly-filter-bar" style={s.filterBar}>
               <input style={s.filterInput} placeholder="🔍 Cliente..." value={filters.cliente} onChange={e=>setFilters(f=>({...f,cliente:e.target.value}))} />
               <input style={s.filterInput} placeholder="🔍 Piloto..." value={filters.piloto} onChange={e=>setFilters(f=>({...f,piloto:e.target.value}))} />
               <input style={s.filterInput} placeholder="🔍 Drone..." value={filters.drone} onChange={e=>setFilters(f=>({...f,drone:e.target.value}))} />
@@ -257,8 +293,8 @@ export default function AdminPanel() {
             {loading ? <div style={s.empty}>Carregando...</div> : filtered.length===0 ? (
               <div style={s.empty}>Nenhum relatório encontrado</div>
             ) : (
-              <div style={s.tableWrap}>
-                <table style={s.table}>
+              <div className="orofly-table-wrap" style={s.tableWrap}>
+                <table className="orofly-table" style={s.table}>
                   <thead>
                     <tr style={s.thead}>
                       {['Cliente','Fazenda','Piloto','Drone','Status','Data','Tempo','Ações'].map(h=>(
@@ -297,7 +333,7 @@ export default function AdminPanel() {
                         {isSelected && (
                           <tr key={rel.id+'-detail'}>
                             <td colSpan={8} style={{padding:'0 0 0 0',background:'#f0f8f4',borderBottom:'2px solid #d0e4d8'}}>
-                              <div style={s.detailRow}>
+                              <div className="orofly-detail-row" style={s.detailRow}>
                                 <DetailCol title="Localização" items={[
                                   ['Local', rel.localizacao],
                                   ['GPS', rel.gps_lat?`${rel.gps_lat}, ${rel.gps_lng}`:'—'],
@@ -331,7 +367,7 @@ export default function AdminPanel() {
 
         {/* USUÁRIOS */}
         {tab==='pilotos' && (
-          <div style={s.page}>
+          <div className="orofly-page" style={s.page}>
             <div style={s.pageHeader}>
               <div>
                 <div style={s.pageTitle}>Gestão de Usuários</div>
@@ -339,9 +375,9 @@ export default function AdminPanel() {
               </div>
             </div>
 
-            <div style={s.usersLayout}>
+            <div className="orofly-users-layout" style={s.usersLayout}>
               {/* FORM CRIAR */}
-              <div style={s.createCard}>
+              <div className="orofly-create-card" style={s.createCard}>
                 <div style={s.createCardTitle}>+ Novo usuário</div>
                 <form onSubmit={criarUsuario} style={{display:'flex',flexDirection:'column',gap:14}}>
                   {[['Nome completo','nome','text','João da Silva'],['E-mail','email','email','piloto@orofly.com'],['Senha inicial','senha','password','Mínimo 6 caracteres']].map(([lbl,key,type,ph])=>(
@@ -425,13 +461,13 @@ export default function AdminPanel() {
       {/* MODAL EDITAR */}
       {editModal && (
         <div style={s.modalOverlay} onClick={()=>setEditModal(null)}>
-          <div style={s.editModal} onClick={e=>e.stopPropagation()}>
+          <div className="orofly-modal" style={s.editModal} onClick={e=>e.stopPropagation()}>
             <div style={s.modalHeader}>
               <span style={s.modalTitle}>✏️ Editar Relatório</span>
               <button style={s.modalClose} onClick={()=>setEditModal(null)}>✕</button>
             </div>
             <div style={s.modalBody}>
-              <div style={s.modalGrid}>
+              <div className="orofly-modal-grid" style={s.modalGrid}>
                 {[['Cliente','cliente'],['Fazenda','fazenda'],['Piloto','piloto_nome'],['Drone','drone'],['Localização','localizacao']].map(([lbl,key])=>(
                   <div key={key}>
                     <div style={s.formLabel}>{lbl.toUpperCase()}</div>
@@ -587,31 +623,54 @@ export default function AdminPanel() {
   )
 }
 
-// Componente que carrega foto existente do Storage para preview
 function ExistingPhoto({ supabase, path, bucket, label, small }) {
   const [url, setUrl] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!path) return
-    // Tenta signed URL (funciona com buckets privados)
-    supabase.storage.from(bucket).createSignedUrl(path, 3600).then(({ data }) => {
-      if (data?.signedUrl) setUrl(data.signedUrl)
+    setLoading(true)
+    supabase.storage.from(bucket).createSignedUrl(path, 3600).then(({ data, error }) => {
+      if (!error && data?.signedUrl) setUrl(data.signedUrl)
+      setLoading(false)
     })
   }, [path, bucket, supabase])
 
-  if (!url) return <div style={{fontSize:11,color:'#6b8070'}}>⏳ carregando...</div>
+  async function handleDownload(e) {
+    e.stopPropagation()
+    if (!url) return
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = path.split('/').pop() || 'foto.jpg'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch { window.open(url, '_blank') }
+  }
+
+  if (loading) return <div style={{fontSize:11,color:'#6b8070',padding:'8px 0'}}>⏳ carregando foto...</div>
+  if (!url) return <div style={{fontSize:11,color:'#c0392b',padding:'8px 0'}}>⚠️ Foto não encontrada</div>
 
   return (
     <div style={{position:'relative'}}>
-      <img src={url} alt="foto" style={{width:'100%', maxHeight: small?60:120, objectFit:'cover', borderRadius:8}} />
+      <img src={url} alt="foto" style={{width:'100%', maxHeight: small?60:130, objectFit:'cover', borderRadius:8, display:'block'}} />
       {!small && (
-        <a href={url} target="_blank" rel="noreferrer"
-          style={{position:'absolute',top:6,right:6,background:'rgba(0,0,0,0.65)',color:'#fff',borderRadius:6,padding:'3px 8px',fontSize:11,textDecoration:'none',cursor:'pointer'}}
-          onClick={e=>e.stopPropagation()}>
-          🔍 ver foto
-        </a>
+        <div style={{display:'flex',gap:6,marginTop:6}}>
+          <a href={url} target="_blank" rel="noreferrer"
+            style={{flex:1,background:'#e8f5ee',color:'#1a7a4a',borderRadius:6,padding:'5px 8px',fontSize:11,textDecoration:'none',textAlign:'center',cursor:'pointer'}}
+            onClick={e=>e.stopPropagation()}>
+            🔍 Ver
+          </a>
+          <button
+            style={{flex:1,background:'#185fa5',color:'#fff',border:'none',borderRadius:6,padding:'5px 8px',fontSize:11,cursor:'pointer'}}
+            onClick={handleDownload}>
+            ⬇ Baixar
+          </button>
+        </div>
       )}
-      <div style={{fontSize:10,color:'#1a7a4a',marginTop:4}}>Foto atual — clique na área para trocar</div>
+      <div style={{fontSize:10,color:'#6b8070',marginTop:4}}>Clique na área acima para trocar a foto</div>
     </div>
   )
 }
@@ -631,7 +690,8 @@ function DetailCol({ title, items }) {
 }
 
 const s = {
-  shell:{display:'flex',minHeight:'100vh',background:'#f4f8f5',fontFamily:"'DM Sans',sans-serif"},
+  shell:{display:'flex',flexDirection:'column',minHeight:'100vh',background:'#f4f8f5',fontFamily:"'DM Sans',sans-serif"},
+  mobileHeader:{background:'#111a14',padding:'12px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50},
   sidebar:{width:240,background:'#111a14',display:'flex',flexDirection:'column',position:'sticky',top:0,height:'100vh',flexShrink:0},
   sidebarTop:{padding:'28px 20px 20px'},
   logo:{display:'flex',alignItems:'center',gap:10,marginBottom:4},
@@ -649,8 +709,8 @@ const s = {
   userChip:{display:'flex',alignItems:'center',gap:10,marginBottom:12},
   userAvatar:{width:32,height:32,borderRadius:'50%',background:'#1a7a4a',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:14,fontFamily:"'Syne',sans-serif",flexShrink:0},
   logoutBtn:{width:'100%',background:'transparent',border:'1px solid #1e3828',color:'#4a6e56',borderRadius:8,padding:'8px',fontSize:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"},
-  main:{flex:1,overflow:'auto'},
-  page:{padding:'32px 36px',maxWidth:1400},
+  main:{flex:1,overflow:'auto',display:'flex',flexDirection:'column'},
+  page:{padding:'24px 28px',maxWidth:1400,width:'100%'},
   pageHeader:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24},
   pageTitle:{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:700,color:'#111a14'},
   pageSub:{fontSize:13,color:'#6b8070',marginTop:4},

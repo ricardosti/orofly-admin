@@ -10,17 +10,13 @@ async function toBase64(blob) {
   })
 }
 
-// Tenta baixar imagem do Supabase Storage como base64
+// Baixa imagem do Supabase Storage como base64 via signed URL
 async function fetchImageBase64(supabase, bucket, path) {
+  if (!path || !supabase) return null
   try {
-    // Tenta download direto primeiro
-    const { data, error } = await supabase.storage.from(bucket).download(path)
-    if (!error && data) return await toBase64(data)
-
-    // Fallback: signed URL
-    const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60)
-    if (!signed?.signedUrl) return null
-
+    const { data: signed, error: signErr } = await supabase.storage
+      .from(bucket).createSignedUrl(path, 120)
+    if (signErr || !signed?.signedUrl) return null
     const res = await fetch(signed.signedUrl)
     if (!res.ok) return null
     const blob = await res.blob()
