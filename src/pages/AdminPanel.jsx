@@ -23,6 +23,7 @@ export default function AdminPanel() {
   const [toast, setToast] = useState('')
   const [filters, setFilters] = useState({ cliente:'', piloto:'', drone:'', status:'', dataIni:'', dataFim:'' })
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [newUser, setNewUser] = useState({ nome:'', email:'', senha:'', role:'piloto' })
   const [criandoUser, setCriandoUser] = useState(false)
 
   const showToast = useCallback((msg, type='success') => {
