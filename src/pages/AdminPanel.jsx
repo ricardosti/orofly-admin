@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import { gerarPDFRelatorio } from '../lib/pdf'
@@ -8,27 +8,73 @@ const STATUS_COLOR = { rascunho:'#6b8070', em_operacao:'#1a7a4a', pausado:'#e8a0
 const STATUS_BG    = { rascunho:'#f4f8f5', em_operacao:'#e8f5ee', pausado:'#fdf3e0', finalizado:'#e6f1fb' }
 const COND_KEYS    = ['faixa','vazao','vento','umidade','temperatura','delta_t']
 const COND_LABELS  = ['Faixa','Vazão','Vento','Umidade','Temperatura','Delta T']
+const PRODUTOS_LIST = ['Triclon','Triomax','Moddus','Suiker','Roundup','Essenza','Spotlight','Agile','Volt','Mag8','Outros']
+
+function useIsMobile() {
+  const [m, setM] = useState(() => window.innerWidth < 768)
+  useEffect(() => {
+    const fn = () => setM(window.innerWidth < 768)
+    window.addEventListener('resize', fn)
+    return () => window.removeEventListener('resize', fn)
+  }, [])
+  return m
+}
+
+// Produto com select + dosagem
+function ProdutoRow({ value, onChange, onRemove, showRemove }) {
+  // value format: "NomeProduto - dosagem" ou apenas "NomeProduto"
+  const parts = value ? value.split(' - ') : ['']
+  const nome = parts[0] || ''
+  const dosagem = parts.slice(1).join(' - ') || ''
+  const isOutros = nome === 'Outros' || (!PRODUTOS_LIST.includes(nome) && nome !== '')
+  const selectVal = PRODUTOS_LIST.includes(nome) ? nome : (nome ? 'Outros' : '')
+
+  function update(newNome, newDosagem) {
+    onChange(newDosagem ? `${newNome} - ${newDosagem}` : newNome)
+  }
+
+  return (
+    <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6,flexWrap:'wrap'}}>
+      <select style={{...sG.input,flex:'0 0 140px',fontSize:13}} value={selectVal}
+        onChange={e => update(e.target.value === 'Outros' ? '' : e.target.value, dosagem)}>
+        <option value="">Selecione...</option>
+        {PRODUTOS_LIST.map(p => <option key={p}>{p}</option>)}
+      </select>
+      {(isOutros || selectVal === 'Outros') && (
+        <input style={{...sG.input,flex:'0 0 110px',fontSize:13}} placeholder="Nome do produto" value={nome === 'Outros' ? '' : nome}
+          onChange={e => update(e.target.value || 'Outros', dosagem)} />
+      )}
+      <input style={{...sG.input,flex:1,minWidth:80,fontSize:13}} placeholder="Dosagem (ex: 0.9 L/ha)"
+        value={dosagem} onChange={e => update(nome === 'Outros' ? (document.activeElement?.previousSibling?.value || '') : nome, e.target.value)} />
+      {showRemove && <button style={{background:'none',border:'none',color:'#c0392b',cursor:'pointer',fontSize:18,flexShrink:0}} onClick={onRemove}>×</button>}
+    </div>
+  )
+}
 
 export default function AdminPanel() {
   const { profile, signOut } = useAuth()
+  const isMobile = useIsMobile()
   const [tab, setTab] = useState('relatorios')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [relatorios, setRelatorios] = useState([])
   const [pilotos, setPilotos] = useState([])
   const [voosPorPiloto, setVoosPorPiloto] = useState({})
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
   const [editModal, setEditModal] = useState(null)
+  const [editFotoMapa, setEditFotoMapa] = useState(null)
+  const [editFotoMapaFile, setEditFotoMapaFile] = useState(null)
+  const [editObsFotos, setEditObsFotos] = useState([null,null,null])
+  const [editObsFotoFiles, setEditObsFotoFiles] = useState([null,null,null])
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [toast, setToast] = useState('')
+  const [toast, setToast] = useState(null)
   const [filters, setFilters] = useState({ cliente:'', piloto:'', drone:'', status:'', dataIni:'', dataFim:'' })
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [newUser, setNewUser] = useState({ nome:'', email:'', senha:'', role:'piloto' })
   const [criandoUser, setCriandoUser] = useState(false)
 
   const showToast = useCallback((msg, type='success') => {
-    setToast({msg, type})
-    setTimeout(()=>setToast(''), 3000)
+    setToast({msg, type}); setTimeout(() => setToast(null), 3000)
   }, [])
 
   useEffect(() => { fetchAll() }, [])
@@ -36,15 +82,12 @@ export default function AdminPanel() {
   async function fetchAll() {
     setLoading(true)
     const [{ data: rels }, usersRes] = await Promise.all([
-      supabase.from('relatorios').select('*, profiles(nome,email)').order('created_at', { ascending: false }),
+      supabase.from('relatorios').select('*').order('created_at', { ascending: false }),
       fetch('/api/list-users')
     ])
     const rs = rels || []
     setRelatorios(rs)
-    if (usersRes.ok) {
-      const data = await usersRes.json()
-      setPilotos(data.users || [])
-    }
+    if (usersRes.ok) { const d = await usersRes.json(); setPilotos(d.users || []) }
     const counts = {}
     rs.forEach(r => { counts[r.piloto_id] = (counts[r.piloto_id]||0) + 1 })
     setVoosPorPiloto(counts)
@@ -61,689 +104,544 @@ export default function AdminPanel() {
     return true
   })
 
-  function calcTempo(ini, fim, pausaIni, pausaFim) {
+  function calcTempo(ini, fim, pi, pf) {
     if (!ini || !fim) return null
-    const totalMin = Math.round((new Date(fim) - new Date(ini)) / 60000)
-    if (totalMin <= 0) return null
-    let pausaMin = 0
-    if (pausaIni && pausaFim) pausaMin = Math.max(0, Math.round((new Date(pausaFim) - new Date(pausaIni)) / 60000))
-    const fmt = m => { const h=Math.floor(m/60),min=m%60; return h>0?`${h}h${String(min).padStart(2,'0')}m`:`${min}m` }
-    return { total: fmt(totalMin), efetivo: fmt(totalMin-pausaMin), temPausa: pausaMin>0 }
+    const t = Math.round((new Date(fim)-new Date(ini))/60000)
+    if (t <= 0) return null
+    let p = 0; if (pi && pf) p = Math.max(0, Math.round((new Date(pf)-new Date(pi))/60000))
+    const f = m => { const h=Math.floor(m/60),min=m%60; return h>0?`${h}h${String(min).padStart(2,'0')}m`:`${min}m` }
+    return { total:f(t), efetivo:f(t-p), temPausa:p>0 }
   }
-
-  const [editFotoMapa, setEditFotoMapa] = useState(null)
-  const [editFotoMapaFile, setEditFotoMapaFile] = useState(null)
-  const [editObsFotos, setEditObsFotos] = useState([null,null,null])
-  const [editObsFotoFiles, setEditObsFotoFiles] = useState([null,null,null])
 
   async function salvarEdicao() {
     if (!editModal) return
     setSaving(true)
-
-    // Upload foto mapa se tiver nova
     let fotoMapaUrl = editModal.foto_mapa_url
     if (editFotoMapaFile) {
       const path = `${editModal.piloto_id}/${editModal.id}/mapa.jpg`
-      await supabase.storage.from('relatorios').upload(path, editFotoMapaFile, { upsert: true })
+      await supabase.storage.from('relatorios').upload(path, editFotoMapaFile, { upsert:true })
       fotoMapaUrl = path
     }
-
-    // Upload fotos obs se tiver novas
-    let obsUrls = editModal.obs_fotos_urls || [null,null,null]
-    for (let i = 0; i < 3; i++) {
+    let obsUrls = [...(editModal.obs_fotos_urls || [null,null,null])]
+    for (let i=0; i<3; i++) {
       if (editObsFotoFiles[i]) {
         const path = `${editModal.piloto_id}/${editModal.id}/obs_${i}.jpg`
-        await supabase.storage.from('relatorios').upload(path, editObsFotoFiles[i], { upsert: true })
+        await supabase.storage.from('relatorios').upload(path, editObsFotoFiles[i], { upsert:true })
         obsUrls[i] = path
       }
     }
+    const { id, created_at, updated_at, ...campos } = editModal
+    const { error } = await supabase.from('relatorios').update({...campos, foto_mapa_url:fotoMapaUrl, obs_fotos_urls:obsUrls}).eq('id', id)
+    if (error) { showToast('Erro: '+error.message, 'error'); setSaving(false); return }
+    showToast('✅ Salvo!'); resetEdit(); fetchAll(); setSaving(false)
+  }
 
-    const { id, profiles, created_at, updated_at, ...campos } = editModal
-    const { error } = await supabase.from('relatorios').update({
-      ...campos,
-      foto_mapa_url: fotoMapaUrl,
-      obs_fotos_urls: obsUrls
-    }).eq('id', id)
-
-    if (error) { showToast('Erro ao salvar: '+error.message, 'error'); setSaving(false); return }
-    showToast('✅ Relatório salvo!')
-    setEditModal(null); setSelected(null)
-    setEditFotoMapa(null); setEditFotoMapaFile(null)
+  function resetEdit() {
+    setEditModal(null); setEditFotoMapa(null); setEditFotoMapaFile(null)
     setEditObsFotos([null,null,null]); setEditObsFotoFiles([null,null,null])
-    fetchAll(); setSaving(false)
   }
 
   async function deletarRelatorio(id) {
-    const { error } = await supabase.from('relatorios').delete().eq('id', id)
-    if (error) { showToast('Erro ao deletar', 'error'); return }
-    showToast('🗑️ Relatório deletado')
-    setConfirmDelete(null); setSelected(null); fetchAll()
+    await supabase.from('relatorios').delete().eq('id', id)
+    showToast('🗑️ Deletado'); setConfirmDelete(null); setSelected(null); fetchAll()
   }
 
   async function toggleAtivo(piloto) {
     try {
-      const res = await fetch('/api/toggle-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: piloto.id, ativo: !piloto.ativo })
-      })
-      const data = await res.json()
-      if (data.error) throw new Error(data.error)
-      showToast(piloto.ativo ? '⛔ Usuário desativado' : '✅ Usuário ativado')
-      fetchAll()
-    } catch (err) {
-      showToast('Erro: ' + err.message, 'error')
-    }
+      const res = await fetch('/api/toggle-user', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:piloto.id,ativo:!piloto.ativo})})
+      const d = await res.json(); if (d.error) throw new Error(d.error)
+      showToast(piloto.ativo?'⛔ Desativado':'✅ Ativado'); fetchAll()
+    } catch(e) { showToast('Erro: '+e.message,'error') }
   }
 
-  async function baixarPDF(rel) {
+  async function gerarPDF(rel, localFotoMapa, localObsFotos) {
     showToast('⏳ Gerando PDF...')
-    // Recarrega do banco para garantir foto_mapa_url e obs_fotos_urls atualizados
-    const { data: relAtual } = await supabase
-      .from('relatorios').select('*').eq('id', rel.id).single()
-    const relFinal = relAtual || rel
-    const doc = await gerarPDFRelatorio(relFinal, { supabase })
-    doc.save(`relatorio-orofly-${relFinal.cliente?.replace(/\s+/g,'-').toLowerCase()}-${new Date(relFinal.created_at).toLocaleDateString('pt-BR').replace(/\//g,'-')}.pdf`)
-    showToast('✅ PDF baixado!')
+    try {
+      const { data: relAtual } = await supabase.from('relatorios').select('*').eq('id', rel.id).single()
+      const relFinal = relAtual || rel
+      const doc = await gerarPDFRelatorio(relFinal, {
+        supabase,
+        localFotoMapa: localFotoMapa || null,
+        localObsFotos: localObsFotos?.some(Boolean) ? localObsFotos : null
+      })
+      doc.save(`relatorio-orofly-${relFinal.cliente?.replace(/\s+/g,'-').toLowerCase()}-${new Date(relFinal.created_at).toLocaleDateString('pt-BR').replace(/\//g,'-')}.pdf`)
+      showToast('✅ PDF baixado!')
+    } catch(e) { console.error(e); showToast('Erro ao gerar PDF','error') }
   }
 
   async function criarUsuario(e) {
     e.preventDefault()
-    if (!newUser.nome || !newUser.email || !newUser.senha) { showToast('⚠️ Preencha todos os campos','error'); return }
-    if (newUser.senha.length < 6) { showToast('⚠️ Senha mínima 6 caracteres','error'); return }
+    if (!newUser.nome||!newUser.email||!newUser.senha) { showToast('⚠️ Preencha tudo','error'); return }
+    if (newUser.senha.length < 6) { showToast('⚠️ Senha mín. 6 chars','error'); return }
     setCriandoUser(true)
     try {
-      const res = await fetch('/api/create-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser)
-      })
-      const text = await res.text()
-      let data
-      try { data = JSON.parse(text) } catch { throw new Error('Função não encontrada no servidor.') }
+      const res = await fetch('/api/create-user', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(newUser)})
+      const text = await res.text(); let data
+      try { data = JSON.parse(text) } catch { throw new Error('Função não encontrada.') }
       if (data.error) throw new Error(data.error)
-      showToast('✅ Usuário criado com sucesso!')
-      setNewUser({ nome:'', email:'', senha:'', role:'piloto' })
-      fetchAll()
-    } catch (err) { showToast('Erro: '+err.message, 'error') }
+      showToast('✅ Usuário criado!'); setNewUser({nome:'',email:'',senha:'',role:'piloto'}); fetchAll()
+    } catch(e) { showToast('Erro: '+e.message,'error') }
     setCriandoUser(false)
   }
 
   const fmt = v => v ? new Date(v).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—'
 
-  return (
-    <div style={s.shell}>
-      <style>{`
-        @media (max-width: 768px) {
-          .orofly-sidebar { display: none !important; }
-          .orofly-mobile-header { display: flex !important; }
-          .orofly-page { padding: 12px !important; }
-          .orofly-filter-bar { flex-direction: column !important; }
-          .orofly-filter-bar input, .orofly-filter-bar select { min-width: 0 !important; width: 100% !important; }
-          .orofly-table-wrap { overflow-x: auto !important; font-size: 11px !important; }
-          .orofly-table th, .orofly-table td { padding: 8px !important; font-size: 11px !important; }
-          .orofly-detail-row { flex-direction: column !important; }
-          .orofly-users-layout { flex-direction: column !important; }
-          .orofly-create-card { width: 100% !important; }
-          .orofly-modal { border-radius: 0 !important; width: 100vw !important; max-width: 100vw !important; max-height: 100vh !important; height: 100vh !important; }
-          .orofly-modal-grid { grid-template-columns: 1fr 1fr !important; }
-          .orofly-cond-grid { grid-template-columns: 1fr 1fr !important; }
-          .orofly-main { flex-direction: column !important; }
-        }
-        @media (min-width: 769px) {
-          .orofly-mobile-header { display: none !important; }
-          .orofly-main { flex-direction: row !important; }
-        }
-      `}</style>
-      <div className="orofly-mobile-header" style={s.mobileHeader}>
-        <div style={s.logo}>
+  const NavContent = () => (
+    <>
+      <div style={{padding:'24px 20px 16px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2da05e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-          <span style={s.logoTxt}>Orofly<span style={{color:'#f0c040'}}>.</span></span>
+          <span style={{fontFamily:"'Syne',sans-serif",fontSize:19,fontWeight:700,color:'#fff',letterSpacing:-0.5}}>Orofly<span style={{color:'#f0c040'}}>.</span></span>
+          <span style={{background:'#f0c040',color:'#111a14',fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6}}>ADMIN</span>
         </div>
-        <div style={{display:'flex',alignItems:'center',gap:12}}>
-          <div style={{display:'flex',gap:8}}>
-            <button style={{...s.navBtn,...(tab==='relatorios'?{color:'#fff',background:'#1a3a22'}:{})}} onClick={()=>{setTab('relatorios');setMobileMenuOpen(false)}}>📋</button>
-            <button style={{...s.navBtn,...(tab==='pilotos'?{color:'#fff',background:'#1a3a22'}:{})}} onClick={()=>{setTab('pilotos');setMobileMenuOpen(false)}}>👥</button>
-          </div>
-          <button style={{background:'transparent',border:'1px solid #2d4a38',color:'#8aad94',borderRadius:8,padding:'6px 10px',cursor:'pointer',fontSize:12}} onClick={signOut}>Sair</button>
-        </div>
+        <div style={{fontSize:10,color:'#4a6e56',letterSpacing:1}}>Painel de Administração</div>
       </div>
-
-      {/* SIDEBAR DESKTOP */}
-      <aside className="orofly-sidebar" style={s.sidebar}>
-        <div style={s.sidebarTop}>
-          <div style={s.logo}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2da05e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-            <span style={s.logoTxt}>Orofly<span style={{color:'#f0c040'}}>.</span></span>
+      <nav style={{padding:'4px 12px',flex:1}}>
+        {[['relatorios','📋','Relatórios',filtered.length],['pilotos','👥','Usuários',pilotos.length]].map(([id,icon,lbl,cnt])=>(
+          <button key={id} style={{display:'flex',alignItems:'center',gap:8,width:'100%',background:tab===id?'#1a3a22':'transparent',border:'none',borderRadius:10,padding:'9px 12px',cursor:'pointer',color:tab===id?'#fff':'#8aad94',fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:500,marginBottom:3}}
+            onClick={()=>{setTab(id);setSidebarOpen(false)}}>
+            <span>{icon}</span><span style={{flex:1,textAlign:'left'}}>{lbl}</span>
+            <span style={{background:tab===id?'#f0c040':'#1e3828',color:tab===id?'#111a14':'#6b8070',fontSize:11,fontWeight:600,padding:'1px 7px',borderRadius:20}}>{cnt}</span>
+          </button>
+        ))}
+      </nav>
+      <div style={{padding:'10px 20px',borderTop:'1px solid #1e3828',borderBottom:'1px solid #1e3828',display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4}}>
+        {[['Em voo',relatorios.filter(r=>r.status==='em_operacao').length,'#2da05e'],['Pausados',relatorios.filter(r=>r.status==='pausado').length,'#e8a020'],['Finalizados',relatorios.filter(r=>r.status==='finalizado').length,'#185fa5']].map(([lbl,val,cor])=>(
+          <div key={lbl} style={{textAlign:'center'}}>
+            <div style={{fontFamily:"'Syne',sans-serif",fontSize:18,fontWeight:700,color:cor}}>{val}</div>
+            <div style={{fontSize:9,color:'#4a6e56'}}>{lbl}</div>
           </div>
-          <div style={s.logoSub}>Painel Admin</div>
+        ))}
+      </div>
+      <div style={{padding:'14px 20px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+          <div style={{width:30,height:30,borderRadius:'50%',background:'#1a7a4a',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:13}}>{profile?.nome?.[0]?.toUpperCase()}</div>
+          <div><div style={{fontSize:12,fontWeight:500,color:'#fff'}}>{profile?.nome}</div><div style={{fontSize:10,color:'#8aad94'}}>Admin</div></div>
         </div>
+        <button style={{width:'100%',background:'transparent',border:'1px solid #1e3828',color:'#4a6e56',borderRadius:8,padding:'7px',fontSize:12,cursor:'pointer'}} onClick={signOut}>Sair</button>
+        <div style={{textAlign:'center',fontSize:10,color:'#2d4a38',marginTop:8,letterSpacing:1}}>v1.17</div>
+      </div>
+    </>
+  )
 
-        <nav style={s.nav}>
-          {[
-            ['relatorios','📋','Relatórios', filtered.length],
-            ['pilotos','👥','Usuários', pilotos.length],
-          ].map(([id,icon,label,count])=>(
-            <button key={id} style={{...s.navBtn,...(tab===id?s.navBtnActive:{})}} onClick={()=>setTab(id)}>
-              <span style={{fontSize:16}}>{icon}</span>
-              <span style={{flex:1,textAlign:'left'}}>{label}</span>
-              <span style={{...s.navCount,...(tab===id?{background:'#f0c040',color:'#111a14'}:{})}}>{count}</span>
-            </button>
-          ))}
-        </nav>
+  const fi = sG.input
 
-        {/* STATS */}
-        <div style={s.sideStats}>
-          <div style={s.statItem}><span style={s.statVal}>{relatorios.filter(r=>r.status==='em_operacao').length}</span><span style={s.statLbl}>Em voo</span></div>
-          <div style={s.statItem}><span style={{...s.statVal,color:'#e8a020'}}>{relatorios.filter(r=>r.status==='pausado').length}</span><span style={s.statLbl}>Pausados</span></div>
-          <div style={s.statItem}><span style={{...s.statVal,color:'#185fa5'}}>{relatorios.filter(r=>r.status==='finalizado').length}</span><span style={s.statLbl}>Finalizados</span></div>
+  return (
+    <div style={{display:'flex',minHeight:'100vh',background:'#f4f8f5',fontFamily:"'DM Sans',sans-serif"}}>
+
+      {/* DESKTOP SIDEBAR */}
+      {!isMobile && (
+        <aside style={{width:240,background:'#111a14',display:'flex',flexDirection:'column',position:'sticky',top:0,height:'100vh',flexShrink:0,overflowY:'auto'}}>
+          <NavContent />
+        </aside>
+      )}
+
+      {/* MOBILE SIDEBAR OVERLAY */}
+      {isMobile && sidebarOpen && (
+        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex'}}>
+          <div style={{width:260,background:'#111a14',display:'flex',flexDirection:'column',overflowY:'auto'}}>
+            <NavContent />
+          </div>
+          <div style={{flex:1,background:'rgba(0,0,0,.5)'}} onClick={()=>setSidebarOpen(false)} />
         </div>
+      )}
 
-        <div style={s.sidebarBottom}>
-          <div style={s.userChip}>
-            <div style={s.userAvatar}>{profile?.nome?.[0]?.toUpperCase()}</div>
+      {/* CONTENT */}
+      <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
+
+        {/* MOBILE TOPBAR */}
+        {isMobile && (
+          <div style={{background:'#111a14',padding:'11px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:100}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <button style={{background:'transparent',border:'none',color:'#8aad94',fontSize:22,cursor:'pointer'}} onClick={()=>setSidebarOpen(true)}>☰</button>
+              <span style={{fontFamily:"'Syne',sans-serif",fontSize:17,fontWeight:700,color:'#fff'}}>Orofly<span style={{color:'#f0c040'}}>.</span></span>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              {[['relatorios','📋'],['pilotos','👥']].map(([id,ic])=>(
+                <button key={id} style={{background:tab===id?'#1a3a22':'transparent',border:'none',borderRadius:8,padding:'6px 10px',cursor:'pointer',fontSize:16,color:tab===id?'#fff':'#8aad94'}} onClick={()=>setTab(id)}>{ic}</button>
+              ))}
+              <button style={{background:'transparent',border:'1px solid #2d4a38',color:'#8aad94',borderRadius:8,padding:'5px 10px',fontSize:11,cursor:'pointer'}} onClick={signOut}>Sair</button>
+            </div>
+          </div>
+        )}
+
+        <main style={{flex:1,overflow:'auto',padding: isMobile?'12px':'28px 32px'}}>
+
+          {/* ===== RELATÓRIOS ===== */}
+          {tab==='relatorios' && (
             <div>
-              <div style={{fontSize:13,fontWeight:500,color:'#fff'}}>{profile?.nome}</div>
-              <div style={{fontSize:11,color:'#8aad94'}}>Admin</div>
-            </div>
-          </div>
-          <button style={s.logoutBtn} onClick={signOut}>Sair</button>
-          <div style={{textAlign:'center',fontSize:10,color:'#2d4a38',marginTop:10,letterSpacing:1}}>v1.16</div>
-        </div>
-      </aside>
-
-      {/* MAIN */}
-      <main className="orofly-main" style={{...s.main}} >
-
-        {/* RELATÓRIOS */}
-        {tab==='relatorios' && (
-          <div className="orofly-page" style={s.page}>
-            <div style={s.pageHeader}>
-              <div>
-                <div style={s.pageTitle}>Relatórios de Voo</div>
-                <div style={s.pageSub}>{filtered.length} de {relatorios.length} relatórios</div>
+              <div style={{marginBottom:18}}>
+                <div style={{fontFamily:"'Syne',sans-serif",fontSize:isMobile?18:22,fontWeight:700,color:'#111a14'}}>Relatórios de Voo</div>
+                <div style={{fontSize:12,color:'#6b8070',marginTop:2}}>{filtered.length} de {relatorios.length}</div>
               </div>
-            </div>
 
-            {/* FILTROS */}
-            <div className="orofly-filter-bar" style={s.filterBar}>
-              <input style={s.filterInput} placeholder="🔍 Cliente..." value={filters.cliente} onChange={e=>setFilters(f=>({...f,cliente:e.target.value}))} />
-              <input style={s.filterInput} placeholder="🔍 Piloto..." value={filters.piloto} onChange={e=>setFilters(f=>({...f,piloto:e.target.value}))} />
-              <input style={s.filterInput} placeholder="🔍 Drone..." value={filters.drone} onChange={e=>setFilters(f=>({...f,drone:e.target.value}))} />
-              <select style={s.filterInput} value={filters.status} onChange={e=>setFilters(f=>({...f,status:e.target.value}))}>
-                <option value="">Todos os status</option>
-                <option value="em_operacao">🟢 Em operação</option>
-                <option value="pausado">🟡 Pausado</option>
-                <option value="finalizado">✅ Finalizado</option>
-                <option value="rascunho">Rascunho</option>
-              </select>
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:12,color:'#6b8070',whiteSpace:'nowrap'}}>De:</span>
-                <input type="date" style={s.filterInput} value={filters.dataIni} onChange={e=>setFilters(f=>({...f,dataIni:e.target.value}))} />
+              {/* FILTROS */}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14,background:'#fff',padding:12,borderRadius:12,border:'1px solid #d0e4d8',alignItems:'center'}}>
+                {[['Cliente','cliente'],['Piloto','piloto'],['Drone','drone']].map(([ph,k])=>(
+                  <input key={k} style={{...fi,minWidth:110,flex:1}} placeholder={`🔍 ${ph}...`} value={filters[k]} onChange={e=>setFilters(f=>({...f,[k]:e.target.value}))} />
+                ))}
+                <select style={{...fi,minWidth:130,flex:1}} value={filters.status} onChange={e=>setFilters(f=>({...f,status:e.target.value}))}>
+                  <option value="">Todos status</option>
+                  <option value="em_operacao">🟢 Em operação</option>
+                  <option value="pausado">🟡 Pausado</option>
+                  <option value="finalizado">✅ Finalizado</option>
+                  <option value="rascunho">Rascunho</option>
+                </select>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:11,color:'#6b8070',whiteSpace:'nowrap'}}>De:</span>
+                  <input type="date" style={{...fi,minWidth:120}} value={filters.dataIni} onChange={e=>setFilters(f=>({...f,dataIni:e.target.value}))} />
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:11,color:'#6b8070',whiteSpace:'nowrap'}}>Até:</span>
+                  <input type="date" style={{...fi,minWidth:120}} value={filters.dataFim} onChange={e=>setFilters(f=>({...f,dataFim:e.target.value}))} />
+                </div>
+                {Object.values(filters).some(Boolean) && (
+                  <button style={{background:'none',border:'1px solid #e0b0a8',color:'#c0392b',borderRadius:8,padding:'7px 12px',fontSize:12,cursor:'pointer',whiteSpace:'nowrap'}} onClick={()=>setFilters({cliente:'',piloto:'',drone:'',status:'',dataIni:'',dataFim:''})}>✕ Limpar</button>
+                )}
               </div>
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:12,color:'#6b8070',whiteSpace:'nowrap'}}>Até:</span>
-                <input type="date" style={s.filterInput} value={filters.dataFim} onChange={e=>setFilters(f=>({...f,dataFim:e.target.value}))} />
-              </div>
-              {(filters.cliente||filters.piloto||filters.drone||filters.status||filters.dataIni||filters.dataFim) && (
-                <button style={s.clearBtn} onClick={()=>setFilters({cliente:'',piloto:'',drone:'',status:'',dataIni:'',dataFim:''})}>✕ Limpar</button>
+
+              {loading ? <div style={{textAlign:'center',color:'#6b8070',padding:40}}>Carregando...</div>
+              : filtered.length===0 ? <div style={{textAlign:'center',color:'#6b8070',padding:40}}>Nenhum relatório</div>
+              : isMobile ? (
+                /* MOBILE CARDS */
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  {filtered.map(rel => {
+                    const tempo = calcTempo(rel.dt_inicio,rel.dt_fim,rel.pausa_inicio,rel.pausa_fim)
+                    const isSel = selected?.id===rel.id
+                    return (
+                      <div key={rel.id} style={{background:'#fff',borderRadius:12,border:`1px solid ${isSel?'#1a7a4a':'#d0e4d8'}`,overflow:'hidden'}}>
+                        <div style={{padding:'13px 15px',cursor:'pointer'}} onClick={()=>setSelected(isSel?null:rel)}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                            <div style={{fontWeight:600,fontSize:14,color:'#111a14'}}>{rel.cliente||'—'}</div>
+                            <span style={{background:STATUS_BG[rel.status],color:STATUS_COLOR[rel.status],fontSize:10,fontWeight:600,padding:'2px 8px',borderRadius:20}}>{STATUS_LABEL[rel.status]}</span>
+                          </div>
+                          <div style={{fontSize:12,color:'#6b8070'}}>{rel.fazenda}{rel.area_ha?` · ${rel.area_ha}ha`:''} · {rel.piloto_nome}</div>
+                          <div style={{fontSize:11,color:'#aaa',marginTop:3}}>{new Date(rel.created_at).toLocaleDateString('pt-BR')}{tempo?` · ${tempo.total}`:''}</div>
+                        </div>
+                        {isSel && (
+                          <div style={{padding:'10px 15px',borderTop:'1px solid #f0f4f1',background:'#f9fbfa'}}>
+                            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                              <button style={{background:'#185fa5',color:'#fff',border:'none',borderRadius:8,padding:'6px 12px',fontSize:12,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setEditModal({...rel})}}>✏️ Editar</button>
+                              <button style={{background:'#111a14',color:'#fff',border:'none',borderRadius:8,padding:'6px 12px',fontSize:12,cursor:'pointer'}} onClick={e=>{e.stopPropagation();gerarPDF(rel)}}>📄 PDF</button>
+                              {rel.gps_lat&&<a style={{background:'#1a7a4a',color:'#fff',textDecoration:'none',borderRadius:8,padding:'6px 12px',fontSize:12}} href={`https://maps.google.com/?q=${rel.gps_lat},${rel.gps_lng}`} target="_blank" rel="noreferrer">🗺️</a>}
+                              <button style={{background:'#c0392b',color:'#fff',border:'none',borderRadius:8,padding:'6px 12px',fontSize:12,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setConfirmDelete(rel)}}>🗑️</button>
+                            </div>
+                            {[['Piloto',rel.piloto_nome],['Drone',rel.drone],['Área',rel.area_ha?rel.area_ha+' ha':null],['Início',fmt(rel.dt_inicio)],['Fim',fmt(rel.dt_fim)],...(tempo?[['Tempo',tempo.total]]:[] ),['Obs 1',rel.obs1]].filter(([,v])=>v).map(([l,v])=>(
+                              <div key={l} style={{display:'flex',gap:6,fontSize:12,marginBottom:3}}>
+                                <span style={{color:'#6b8070',minWidth:60}}>{l}:</span>
+                                <span style={{color:'#111a14'}}>{v}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                /* DESKTOP TABLE */
+                <div style={{background:'#fff',borderRadius:12,border:'1px solid #d0e4d8',overflow:'hidden'}}>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',minWidth:700}}>
+                      <thead>
+                        <tr style={{background:'#f4f8f5'}}>
+                          {['Cliente','Fazenda / Área','Piloto','Drone','Status','Data','Tempo','Ações'].map(h=>(
+                            <th key={h} style={{padding:'11px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#6b8070',letterSpacing:0.5,borderBottom:'1px solid #d0e4d8',whiteSpace:'nowrap',fontFamily:"'Syne',sans-serif"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered.map((rel,i)=>{
+                          const tempo = calcTempo(rel.dt_inicio,rel.dt_fim,rel.pausa_inicio,rel.pausa_fim)
+                          const isSel = selected?.id===rel.id
+                          return (
+                            <React.Fragment key={rel.id}>
+                              <tr style={{background:isSel?'#e8f5ee':i%2===0?'#fff':'#f9fbfa',cursor:'pointer'}} onClick={()=>setSelected(isSel?null:rel)}>
+                                <td style={sG.td}><strong>{rel.cliente||'—'}</strong></td>
+                                <td style={sG.td}>{rel.fazenda||'—'}{rel.area_ha?<span style={{fontSize:11,color:'#6b8070'}}> ({rel.area_ha}ha)</span>:''}</td>
+                                <td style={sG.td}>{rel.piloto_nome||'—'}</td>
+                                <td style={sG.td}>{rel.drone||'—'}</td>
+                                <td style={sG.td}><span style={{background:STATUS_BG[rel.status],color:STATUS_COLOR[rel.status],fontSize:11,fontWeight:600,padding:'3px 9px',borderRadius:20}}>{STATUS_LABEL[rel.status]}</span></td>
+                                <td style={sG.td}>{new Date(rel.created_at).toLocaleDateString('pt-BR')}</td>
+                                <td style={sG.td}>{tempo?<span style={{fontSize:12}}>{tempo.total}{tempo.temPausa?<span style={{color:'#6b8070'}}> /{tempo.efetivo}</span>:''}:</span>:'—'}</td>
+                                <td style={{...sG.td,whiteSpace:'nowrap'}}>
+                                  <button title="Editar" style={sG.iconBtn} onClick={e=>{e.stopPropagation();setEditModal({...rel})}}>✏️</button>
+                                  <button title="PDF" style={sG.iconBtn} onClick={e=>{e.stopPropagation();gerarPDF(rel)}}>📄</button>
+                                  {rel.gps_lat&&<a title="Maps" style={{...sG.iconBtn,textDecoration:'none'}} href={`https://maps.google.com/?q=${rel.gps_lat},${rel.gps_lng}`} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>🗺️</a>}
+                                  <button title="Deletar" style={{...sG.iconBtn,color:'#c0392b'}} onClick={e=>{e.stopPropagation();setConfirmDelete(rel)}}>🗑️</button>
+                                </td>
+                              </tr>
+                              {isSel && (
+                                <tr>
+                                  <td colSpan={8} style={{background:'#f0f8f4',borderBottom:'2px solid #d0e4d8',padding:0}}>
+                                    <div style={{display:'flex',gap:20,padding:'16px 20px',flexWrap:'wrap'}}>
+                                      <DetailCol title="Localização" items={[['Local',rel.localizacao],['GPS',rel.gps_lat?`${rel.gps_lat}, ${rel.gps_lng}`:'—']]} />
+                                      <DetailCol title="Cond. Início" items={COND_KEYS.map((k,ii)=>[COND_LABELS[ii],rel[k+'_i']])} />
+                                      <DetailCol title="Cond. Fim" items={COND_KEYS.map((k,ii)=>[COND_LABELS[ii],rel[k+'_f']])} />
+                                      <DetailCol title="Horários" items={[['Início',fmt(rel.dt_inicio)],['Fim',fmt(rel.dt_fim)],...(tempo?[['Total',tempo.total],...(tempo.temPausa?[['Efetivo',tempo.efetivo]]:[])]:[] ),...(rel.pausa?[['Pausa',rel.pausa_motivo]]:[] )]} />
+                                      <DetailCol title="Outros" items={[...((rel.produtos||[]).map((p,ii)=>['Prod.'+(ii+1),p])),['Área',rel.area_ha?rel.area_ha+' ha':null],['Gota',rel.tamanho_gota],['Vel. Drone',rel.velocidade_drone],['Obs 1',rel.obs1],['Obs 2',rel.obs2]]} />
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
             </div>
+          )}
 
-            {/* TABELA */}
-            {loading ? <div style={s.empty}>Carregando...</div> : filtered.length===0 ? (
-              <div style={s.empty}>Nenhum relatório encontrado</div>
-            ) : (
-              <div className="orofly-table-wrap" style={s.tableWrap}>
-                <table className="orofly-table" style={s.table}>
-                  <thead>
-                    <tr style={s.thead}>
-                      {['Cliente','Fazenda','Piloto','Drone','Status','Data','Tempo','Ações'].map(h=>(
-                        <th key={h} style={s.th}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((rel,i)=>{
-                      const tempo = calcTempo(rel.dt_inicio, rel.dt_fim, rel.pausa_inicio, rel.pausa_fim)
-                      const isSelected = selected?.id===rel.id
-                      return <>
-                        <tr key={rel.id} style={{...s.tr,...(i%2===0?{background:'#fff'}:{background:'#f9fbfa'}),...(isSelected?{background:'#e8f5ee'}:{})}}
-                          onClick={()=>setSelected(isSelected?null:rel)}>
-                          <td style={{...s.td,fontWeight:600}}>{rel.cliente||'—'}</td>
-                          <td style={s.td}>{rel.fazenda||'—'}</td>
-                          <td style={s.td}>{rel.piloto_nome||'—'}</td>
-                          <td style={s.td}>{rel.drone||'—'}</td>
-                          <td style={s.td}>
-                            <span style={{...s.statusPill,background:STATUS_BG[rel.status],color:STATUS_COLOR[rel.status]}}>
-                              {STATUS_LABEL[rel.status]}
-                            </span>
-                          </td>
-                          <td style={s.td}>{new Date(rel.created_at).toLocaleDateString('pt-BR')}</td>
-                          <td style={s.td}>
-                            {tempo ? <span style={{fontSize:12}}>{tempo.total}{tempo.temPausa?<span style={{color:'#6b8070'}}> / {tempo.efetivo}</span>:''}</span> : '—'}
-                          </td>
-                          <td style={{...s.td,whiteSpace:'nowrap'}}>
-                            <button style={s.iconBtn} title="Editar" onClick={e=>{e.stopPropagation();setEditModal({...rel})}}>✏️</button>
-                            <button style={s.iconBtn} title="PDF" onClick={e=>{e.stopPropagation();baixarPDF(rel)}}>📄</button>
-                            {rel.gps_lat&&<a style={{...s.iconBtn,textDecoration:'none'}} title="Maps" href={`https://maps.google.com/?q=${rel.gps_lat},${rel.gps_lng}`} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>🗺️</a>}
-                            <button style={{...s.iconBtn,color:'#c0392b'}} title="Deletar" onClick={e=>{e.stopPropagation();setConfirmDelete(rel)}}>🗑️</button>
-                          </td>
-                        </tr>
-                        {/* DETALHE EXPANDIDO */}
-                        {isSelected && (
-                          <tr key={rel.id+'-detail'}>
-                            <td colSpan={8} style={{padding:'0 0 0 0',background:'#f0f8f4',borderBottom:'2px solid #d0e4d8'}}>
-                              <div className="orofly-detail-row" style={s.detailRow}>
-                                <DetailCol title="Localização" items={[
-                                  ['Local', rel.localizacao],
-                                  ['GPS', rel.gps_lat?`${rel.gps_lat}, ${rel.gps_lng}`:'—'],
-                                ]} />
-                                <DetailCol title="Condições Início" items={COND_KEYS.map((k,i)=>[COND_LABELS[i], rel[k+'_i']])} />
-                                <DetailCol title="Condições Fim" items={COND_KEYS.map((k,i)=>[COND_LABELS[i], rel[k+'_f']])} />
-                                <DetailCol title="Horários" items={[
-                                  ['Início', fmt(rel.dt_inicio)],
-                                  ['Fim', fmt(rel.dt_fim)],
-                                  ...(tempo?[['Total', tempo.total],...(tempo.temPausa?[['Efetivo',tempo.efetivo]]:[])]:[] ),
-                                  ...(rel.pausa?[['Pausa motivo',rel.pausa_motivo],['Pausa início',fmt(rel.pausa_inicio)],['Pausa fim',fmt(rel.pausa_fim)]]:[] ),
-                                ]} />
-                                <DetailCol title="Observações" items={[
-                                  ['Obs 1', rel.obs1],
-                                  ['Obs 2', rel.obs2],
-                                  ...(rel.produtos||[]).map((p,i)=>['Produto '+(i+1),p]),
-                                  ...(rel.kml_arquivos||[]).map((f,i)=>['KML '+(i+1),f]),
-                                ]} />
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    })}
-                  </tbody>
-                </table>
+          {/* ===== USUÁRIOS ===== */}
+          {tab==='pilotos' && (
+            <div>
+              <div style={{marginBottom:18}}>
+                <div style={{fontFamily:"'Syne',sans-serif",fontSize:isMobile?18:22,fontWeight:700,color:'#111a14'}}>Gestão de Usuários</div>
+                <div style={{fontSize:12,color:'#6b8070',marginTop:2}}>{pilotos.length} usuários</div>
               </div>
-            )}
-          </div>
-        )}
-
-        {/* USUÁRIOS */}
-        {tab==='pilotos' && (
-          <div className="orofly-page" style={s.page}>
-            <div style={s.pageHeader}>
-              <div>
-                <div style={s.pageTitle}>Gestão de Usuários</div>
-                <div style={s.pageSub}>{pilotos.length} usuários cadastrados</div>
-              </div>
-            </div>
-
-            <div className="orofly-users-layout" style={s.usersLayout}>
-              {/* FORM CRIAR */}
-              <div className="orofly-create-card" style={s.createCard}>
-                <div style={s.createCardTitle}>+ Novo usuário</div>
-                <form onSubmit={criarUsuario} style={{display:'flex',flexDirection:'column',gap:14}}>
-                  {[['Nome completo','nome','text','João da Silva'],['E-mail','email','email','piloto@orofly.com'],['Senha inicial','senha','password','Mínimo 6 caracteres']].map(([lbl,key,type,ph])=>(
-                    <div key={key}>
-                      <div style={s.formLabel}>{lbl.toUpperCase()}</div>
-                      <input
-                        style={s.formInput}
-                        type={type}
-                        placeholder={ph}
-                        value={newUser[key]}
-                        autoComplete="new-password"
-                        onChange={e=>setNewUser(u=>({...u,[key]:e.target.value}))}
-                      />
-                    </div>
-                  ))}
-                  <div>
-                    <div style={s.formLabel}>PERFIL</div>
-                    <select style={s.formInput} value={newUser.role} onChange={e=>setNewUser(u=>({...u,role:e.target.value}))}>
-                      <option value="piloto">🚁 Piloto</option>
-                      <option value="admin">⚙️ Administrador</option>
-                    </select>
-                  </div>
-                  <button type="submit" style={{...s.createBtn,opacity:criandoUser?.6:1}} disabled={criandoUser}>
-                    {criandoUser?'Criando...':'Criar usuário'}
-                  </button>
-                </form>
-              </div>
-
-              {/* LISTA USUÁRIOS */}
-              <div style={{flex:1}}>
-                <table style={s.table}>
-                  <thead>
-                    <tr style={s.thead}>
-                      {['Usuário','E-mail','Perfil','Voos','Status','Ação'].map(h=>(
-                        <th key={h} style={s.th}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pilotos.map((p,i)=>(
-                      <tr key={p.id} style={{...s.tr,...(i%2===0?{background:'#fff'}:{background:'#f9fbfa'}),opacity:p.ativo?1:.5}}>
-                        <td style={s.td}>
-                          <div style={{display:'flex',alignItems:'center',gap:10}}>
-                            <div style={{...s.avatar,background:p.role==='admin'?'#faeeda':'#e8f5ee',color:p.role==='admin'?'#854f0b':'#1a7a4a'}}>
-                              {p.nome?.[0]?.toUpperCase()||'?'}
-                            </div>
-                            <span style={{fontWeight:500}}>{p.nome}</span>
-                          </div>
-                        </td>
-                        <td style={{...s.td,color:'#6b8070'}}>{p.email}</td>
-                        <td style={s.td}>
-                          <span style={{...s.rolePill,background:p.role==='admin'?'#faeeda':'#e8f5ee',color:p.role==='admin'?'#854f0b':'#0f6e56'}}>
-                            {p.role==='admin'?'⚙️ Admin':'🚁 Piloto'}
-                          </span>
-                        </td>
-                        <td style={{...s.td,textAlign:'center'}}>
-                          <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:16,color:'#1a7a4a'}}>
-                            {voosPorPiloto[p.id]||0}
-                          </span>
-                        </td>
-                        <td style={s.td}>
-                          <span style={{...s.statusPill,background:p.ativo?'#e8f5ee':'#fee',color:p.ativo?'#1a7a4a':'#c0392b'}}>
-                            {p.ativo?'Ativo':'Inativo'}
-                          </span>
-                        </td>
-                        <td style={s.td}>
-                          <button style={{...s.toggleUserBtn,background:p.ativo?'#fee':'#e8f5ee',color:p.ativo?'#c0392b':'#1a7a4a'}} onClick={()=>toggleAtivo(p)}>
-                            {p.ativo?'Desativar':'Ativar'}
-                          </button>
-                        </td>
-                      </tr>
+              <div style={{display:'flex',gap:20,flexDirection:isMobile?'column':'row',alignItems:'flex-start'}}>
+                {/* FORM CRIAR */}
+                <div style={{background:'#fff',borderRadius:12,border:'1px solid #d0e4d8',padding:20,width:isMobile?'100%':280,flexShrink:0}}>
+                  <div style={{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,marginBottom:16}}>+ Novo usuário</div>
+                  <form onSubmit={criarUsuario} style={{display:'flex',flexDirection:'column',gap:12}}>
+                    {[['Nome completo','nome','text','João Silva'],['E-mail','email','email','piloto@orofly.com'],['Senha','senha','password','Mínimo 6 caracteres']].map(([lbl,key,type,ph])=>(
+                      <div key={key}>
+                        <div style={sG.label}>{lbl.toUpperCase()}</div>
+                        <input style={sG.input} type={type} placeholder={ph} value={newUser[key]} autoComplete="new-password" onChange={e=>setNewUser(u=>({...u,[key]:e.target.value}))} />
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                    <div>
+                      <div style={sG.label}>PERFIL</div>
+                      <select style={sG.input} value={newUser.role} onChange={e=>setNewUser(u=>({...u,role:e.target.value}))}>
+                        <option value="piloto">🚁 Piloto</option>
+                        <option value="admin">⚙️ Administrador</option>
+                      </select>
+                    </div>
+                    <button type="submit" style={sG.btn} disabled={criandoUser}>{criandoUser?'Criando...':'Criar usuário'}</button>
+                  </form>
+                </div>
+                {/* LISTA */}
+                <div style={{flex:1,overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',background:'#fff',borderRadius:12,border:'1px solid #d0e4d8',overflow:'hidden'}}>
+                    <thead><tr style={{background:'#f4f8f5'}}>{['Usuário','E-mail','Perfil','Voos','Status','Ação'].map(h=><th key={h} style={{padding:'10px 13px',textAlign:'left',fontSize:11,fontWeight:700,color:'#6b8070',borderBottom:'1px solid #d0e4d8',fontFamily:"'Syne',sans-serif"}}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {pilotos.map((p,i)=>(
+                        <tr key={p.id} style={{background:i%2===0?'#fff':'#f9fbfa',opacity:p.ativo?1:.5}}>
+                          <td style={sG.td}><div style={{display:'flex',alignItems:'center',gap:8}}><div style={{width:30,height:30,borderRadius:'50%',background:p.role==='admin'?'#faeeda':'#e8f5ee',color:p.role==='admin'?'#854f0b':'#1a7a4a',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:12,flexShrink:0}}>{p.nome?.[0]?.toUpperCase()||'?'}</div><span style={{fontWeight:500}}>{p.nome}</span></div></td>
+                          <td style={{...sG.td,color:'#6b8070',fontSize:12}}>{p.email}</td>
+                          <td style={sG.td}><span style={{background:p.role==='admin'?'#faeeda':'#e8f5ee',color:p.role==='admin'?'#854f0b':'#0f6e56',fontSize:11,fontWeight:600,padding:'2px 8px',borderRadius:20}}>{p.role==='admin'?'⚙️ Admin':'🚁 Piloto'}</span></td>
+                          <td style={{...sG.td,textAlign:'center',fontFamily:"'Syne',sans-serif",fontWeight:700,color:'#1a7a4a'}}>{voosPorPiloto[p.id]||0}</td>
+                          <td style={sG.td}><span style={{background:p.ativo?'#e8f5ee':'#fee',color:p.ativo?'#1a7a4a':'#c0392b',fontSize:11,fontWeight:600,padding:'2px 8px',borderRadius:20}}>{p.ativo?'Ativo':'Inativo'}</span></td>
+                          <td style={sG.td}><button style={{background:p.ativo?'#fee':'#e8f5ee',color:p.ativo?'#c0392b':'#1a7a4a',border:'none',borderRadius:8,padding:'5px 12px',fontSize:12,cursor:'pointer'}} onClick={()=>toggleAtivo(p)}>{p.ativo?'Desativar':'Ativar'}</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
+        </main>
+      </div>
 
-      {/* MODAL EDITAR */}
+      {/* ===== MODAL EDITAR ===== */}
       {editModal && (
-        <div style={s.modalOverlay} onClick={()=>setEditModal(null)}>
-          <div className="orofly-modal" style={s.editModal} onClick={e=>e.stopPropagation()}>
-            <div style={s.modalHeader}>
-              <span style={s.modalTitle}>✏️ Editar Relatório</span>
-              <button style={s.modalClose} onClick={()=>setEditModal(null)}>✕</button>
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:300,display:'flex',alignItems:isMobile?'flex-end':'center',justifyContent:'center',padding:isMobile?0:24}}>
+          <div style={{background:'#fff',borderRadius:isMobile?'20px 20px 0 0':'16px',width:'100%',maxWidth:isMobile?'100%':920,maxHeight:isMobile?'95vh':'90vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,.15)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'15px 20px',borderBottom:'1px solid #f0f4f1',flexShrink:0}}>
+              <span style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:700}}>✏️ Editar Relatório</span>
+              <button style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#6b8070'}} onClick={resetEdit}>✕</button>
             </div>
-            <div style={s.modalBody}>
-              <div className="orofly-modal-grid" style={s.modalGrid}>
-                {[['Cliente','cliente'],['Fazenda','fazenda'],['Piloto','piloto_nome'],['Drone','drone'],['Localização','localizacao']].map(([lbl,key])=>(
-                  <div key={key}>
-                    <div style={s.formLabel}>{lbl.toUpperCase()}</div>
-                    <input style={s.formInput} value={editModal[key]||''} onChange={e=>setEditModal(m=>({...m,[key]:e.target.value}))} />
-                  </div>
+            <div style={{padding:'16px 20px',overflowY:'auto',flex:1}}>
+
+              {/* IDENTIFICAÇÃO */}
+              <SectionTitle>IDENTIFICAÇÃO</SectionTitle>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)',gap:10,marginBottom:14}}>
+                {[['Cliente','cliente'],['Fazenda','fazenda']].map(([l,k])=>(
+                  <div key={k}><div style={sG.label}>{l.toUpperCase()}</div><input style={sG.input} value={editModal[k]||''} onChange={e=>setEditModal(m=>({...m,[k]:e.target.value}))} /></div>
                 ))}
                 <div>
-                  <div style={s.formLabel}>STATUS</div>
-                  <select style={s.formInput} value={editModal.status||''} onChange={e=>setEditModal(m=>({...m,status:e.target.value}))}>
-                    <option value="rascunho">Rascunho</option>
-                    <option value="em_operacao">Em operação</option>
-                    <option value="pausado">Pausado</option>
-                    <option value="finalizado">Finalizado</option>
+                  <div style={sG.label}>ÁREA (HA)</div>
+                  <input style={sG.input} placeholder="Ex: 50.5" value={editModal.area_ha||''} onChange={e=>setEditModal(m=>({...m,area_ha:e.target.value}))} />
+                </div>
+                {[['Piloto','piloto_nome'],['Drone','drone']].map(([l,k])=>(
+                  <div key={k}><div style={sG.label}>{l.toUpperCase()}</div><input style={sG.input} value={editModal[k]||''} onChange={e=>setEditModal(m=>({...m,[k]:e.target.value}))} /></div>
+                ))}
+                <div>
+                  <div style={sG.label}>STATUS</div>
+                  <select style={sG.input} value={editModal.status||''} onChange={e=>setEditModal(m=>({...m,status:e.target.value}))}>
+                    <option value="rascunho">Rascunho</option><option value="em_operacao">Em operação</option>
+                    <option value="pausado">Pausado</option><option value="finalizado">Finalizado</option>
                   </select>
                 </div>
               </div>
 
-              <div style={{marginTop:20}}>
-                <div style={s.editSection}>CONDIÇÕES DE APLICAÇÃO</div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:10,marginTop:10}}>
-                  {COND_KEYS.map((k,i)=>(
-                    <div key={k}>
-                      <div style={s.formLabel}>{COND_LABELS[i]} INÍCIO</div>
-                      <input style={s.formInput} value={editModal[k+'_i']||''} onChange={e=>setEditModal(m=>({...m,[k+'_i']:e.target.value}))} />
-                    </div>
-                  ))}
-                  {COND_KEYS.map((k,i)=>(
-                    <div key={k+'f'}>
-                      <div style={s.formLabel}>{COND_LABELS[i]} FIM</div>
-                      <input style={s.formInput} value={editModal[k+'_f']||''} onChange={e=>setEditModal(m=>({...m,[k+'_f']:e.target.value}))} />
-                    </div>
-                  ))}
+              {/* PRODUTOS */}
+              <SectionTitle>PRODUTOS</SectionTitle>
+              <div style={{marginBottom:14}}>
+                {(editModal.produtos||['']).map((p,i)=>(
+                  <ProdutoRow key={i} value={p}
+                    onChange={v=>{const arr=[...(editModal.produtos||[])];arr[i]=v;setEditModal(m=>({...m,produtos:arr}))}}
+                    onRemove={()=>setEditModal(m=>({...m,produtos:m.produtos.filter((_,j)=>j!==i)}))}
+                    showRemove={(editModal.produtos||[]).length>1} />
+                ))}
+                <button style={{...sG.btn,background:'#e8f5ee',color:'#1a7a4a',padding:'7px',fontSize:13,marginTop:2}} onClick={()=>setEditModal(m=>({...m,produtos:[...(m.produtos||[]),'']}))}>+ Adicionar produto</button>
+              </div>
+
+              {/* TAMANHO GOTA + VELOCIDADE */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
+                <div>
+                  <div style={sG.label}>TAMANHO DA GOTA</div>
+                  <input style={sG.input} placeholder="Ex: Média, Grossa..." value={editModal.tamanho_gota||''} onChange={e=>setEditModal(m=>({...m,tamanho_gota:e.target.value}))} />
+                </div>
+                <div>
+                  <div style={sG.label}>VELOCIDADE DO DRONE</div>
+                  <input style={sG.input} placeholder="Ex: 7 m/s" value={editModal.velocidade_drone||''} onChange={e=>setEditModal(m=>({...m,velocidade_drone:e.target.value}))} />
                 </div>
               </div>
 
-              <div style={{marginTop:20}}>
-                <div style={s.editSection}>PRODUTOS</div>
-                <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:10}}>
-                  {(editModal.produtos||['']).map((p,i)=>(
-                    <div key={i} style={{display:'flex',gap:8}}>
-                      <input style={{...s.formInput,flex:1}} placeholder="Produto - dosagem" value={p}
-                        onChange={e=>{const arr=[...(editModal.produtos||[])];arr[i]=e.target.value;setEditModal(m=>({...m,produtos:arr}))}} />
-                      {(editModal.produtos||[]).length>1 && <button style={{background:'none',border:'none',color:'#c0392b',cursor:'pointer',fontSize:18}} onClick={()=>setEditModal(m=>({...m,produtos:m.produtos.filter((_,j)=>j!==i)}))}>×</button>}
-                    </div>
-                  ))}
-                  <button style={{...s.createBtn,background:'#e8f5ee',color:'#1a7a4a',padding:'8px 14px',fontSize:13}} onClick={()=>setEditModal(m=>({...m,produtos:[...(m.produtos||[]),'']}))}>+ Produto</button>
-                </div>
+              {/* CONDIÇÕES */}
+              <SectionTitle>CONDIÇÕES INÍCIO / FIM</SectionTitle>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(3,1fr)':'repeat(6,1fr)',gap:8,marginBottom:8}}>
+                {COND_KEYS.map((k,i)=>(
+                  <div key={k}><div style={{...sG.label,fontSize:9}}>{COND_LABELS[i]} INI</div><input style={{...sG.input,padding:'6px 8px',fontSize:12}} value={editModal[k+'_i']||''} onChange={e=>setEditModal(m=>({...m,[k+'_i']:e.target.value}))} /></div>
+                ))}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(3,1fr)':'repeat(6,1fr)',gap:8,marginBottom:14}}>
+                {COND_KEYS.map((k,i)=>(
+                  <div key={k+'f'}><div style={{...sG.label,fontSize:9}}>{COND_LABELS[i]} FIM</div><input style={{...sG.input,padding:'6px 8px',fontSize:12}} value={editModal[k+'_f']||''} onChange={e=>setEditModal(m=>({...m,[k+'_f']:e.target.value}))} /></div>
+                ))}
               </div>
 
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:20}}>
-                <div>
-                  <div style={s.formLabel}>OBS 1</div>
-                  <textarea style={{...s.formInput,resize:'none',minHeight:70}} value={editModal.obs1||''} onChange={e=>setEditModal(m=>({...m,obs1:e.target.value}))} />
-                </div>
-                <div>
-                  <div style={s.formLabel}>OBS 2</div>
-                  <textarea style={{...s.formInput,resize:'none',minHeight:70}} value={editModal.obs2||''} onChange={e=>setEditModal(m=>({...m,obs2:e.target.value}))} />
-                </div>
+              {/* OBS */}
+              <SectionTitle>OBSERVAÇÕES</SectionTitle>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:10,marginBottom:14}}>
+                {[['Obs 1','obs1'],['Obs 2','obs2']].map(([l,k])=>(
+                  <div key={k}><div style={sG.label}>{l}</div><textarea style={{...sG.input,resize:'none',minHeight:56}} value={editModal[k]||''} onChange={e=>setEditModal(m=>({...m,[k]:e.target.value}))} /></div>
+                ))}
               </div>
 
               {/* FOTOS */}
-              <div style={{marginTop:20}}>
-                <div style={s.editSection}>FOTOS</div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:12}}>
-                  <div>
-                    <div style={s.formLabel}>MAPA DE PÓS APLICAÇÃO</div>
-                    <label style={{display:'block',border:'1.5px dashed #d0e4d8',borderRadius:10,padding:12,textAlign:'center',cursor:'pointer',marginTop:6,position:'relative',overflow:'hidden'}}>
-                      <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{
-                        const f=e.target.files[0]; if(!f) return
-                        const r=new FileReader(); r.onload=ev=>setEditFotoMapa(ev.target.result); r.readAsDataURL(f)
-                        setEditFotoMapaFile(f)
-                      }} />
-                      {editFotoMapa
-                        ? <img src={editFotoMapa} alt="mapa" style={{width:'100%',maxHeight:120,objectFit:'cover',borderRadius:8}} />
-                        : editModal.foto_mapa_url
-                          ? <ExistingPhoto supabase={supabase} path={editModal.foto_mapa_url} bucket="relatorios" label="Foto do mapa — clique para trocar" />
-                          : <div style={{fontSize:12,color:'#6b8070'}}>🗺️ Clique para adicionar</div>
-                      }
-                    </label>
-                  </div>
-                  <div>
-                    <div style={s.formLabel}>FOTOS DE OBSERVAÇÃO</div>
-                    <div style={{display:'flex',gap:8,marginTop:6}}>
-                      {[0,1,2].map(i=>(
-                        <label key={i} style={{flex:1,border:'1.5px dashed #d0e4d8',borderRadius:10,padding:8,textAlign:'center',cursor:'pointer',position:'relative',overflow:'hidden',minHeight:70,display:'flex',alignItems:'center',justifyContent:'center'}}>
-                          <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{
-                            const f=e.target.files[0]; if(!f) return
-                            const r=new FileReader(); r.onload=ev=>{const arr=[...editObsFotos];arr[i]=ev.target.result;setEditObsFotos(arr)}; r.readAsDataURL(f)
-                            const arr=[...editObsFotoFiles];arr[i]=f;setEditObsFotoFiles(arr)
-                          }} />
-                          {editObsFotos[i]
-                            ? <img src={editObsFotos[i]} alt="" style={{width:'100%',height:60,objectFit:'cover',borderRadius:6}} />
-                            : (editModal.obs_fotos_urls?.[i]
-                              ? <ExistingPhoto supabase={supabase} path={editModal.obs_fotos_urls[i]} bucket="relatorios" label={`F${i+1} ↺`} small />
-                              : <span style={{fontSize:16}}>📷</span>)
-                          }
-                        </label>
-                      ))}
-                    </div>
+              <SectionTitle>FOTOS</SectionTitle>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:14,marginBottom:8}}>
+                <div>
+                  <div style={sG.label}>MAPA DE PÓS APLICAÇÃO</div>
+                  <label style={{display:'block',border:'1.5px dashed #d0e4d8',borderRadius:10,padding:10,textAlign:'center',cursor:'pointer',marginTop:4,position:'relative',minHeight:60}}>
+                    <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setEditFotoMapa(ev.target.result);r.readAsDataURL(f);setEditFotoMapaFile(f)}} />
+                    {editFotoMapa
+                      ? <img src={editFotoMapa} alt="mapa" style={{width:'100%',maxHeight:120,objectFit:'cover',borderRadius:8}} />
+                      : editModal.foto_mapa_url
+                        ? <StoragePhoto supabase={supabase} path={editModal.foto_mapa_url} bucket="relatorios" />
+                        : <div style={{padding:'16px 0',fontSize:12,color:'#6b8070'}}>🗺️ Clique para adicionar</div>
+                    }
+                  </label>
+                </div>
+                <div>
+                  <div style={sG.label}>FOTOS DE OBSERVAÇÃO</div>
+                  <div style={{display:'flex',gap:8,marginTop:4}}>
+                    {[0,1,2].map(i=>(
+                      <label key={i} style={{flex:1,border:'1.5px dashed #d0e4d8',borderRadius:10,padding:8,textAlign:'center',cursor:'pointer',minHeight:70,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
+                        <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{const a=[...editObsFotos];a[i]=ev.target.result;setEditObsFotos(a)};r.readAsDataURL(f);const a=[...editObsFotoFiles];a[i]=f;setEditObsFotoFiles(a)}} />
+                        {editObsFotos[i]
+                          ? <img src={editObsFotos[i]} alt="" style={{width:'100%',height:60,objectFit:'cover',borderRadius:6}} />
+                          : editModal.obs_fotos_urls?.[i]
+                            ? <StoragePhoto supabase={supabase} path={editModal.obs_fotos_urls[i]} bucket="relatorios" small />
+                            : <span style={{fontSize:18}}>📷</span>
+                        }
+                      </label>
+                    ))}
                   </div>
                 </div>
               </div>
             </div>
-            <div style={s.modalFooter}>
-              <button style={{...s.createBtn,background:'#f4f8f5',color:'#6b8070',flex:1}} onClick={()=>{setEditModal(null);setEditFotoMapa(null);setEditFotoMapaFile(null);setEditObsFotos([null,null,null]);setEditObsFotoFiles([null,null,null])}}>Cancelar</button>
-              <button style={{...s.createBtn,background:'#111a14',flex:1,opacity:saving?.6:1}} disabled={saving} onClick={async()=>{
-                showToast('⏳ Gerando PDF...')
-                const doc = await gerarPDFRelatorio(editModal, {
-                  supabase,
-                  localObsFotos: editObsFotos.some(Boolean) ? editObsFotos : null,
-                  localFotoMapa: editFotoMapa || null
-                })
-                doc.save(`relatorio-orofly-${editModal.cliente?.replace(/\s+/g,'-').toLowerCase()}.pdf`)
-                showToast('✅ PDF baixado!')
-              }}>📄 PDF</button>
-              <button style={{...s.createBtn,flex:2,opacity:saving?.6:1}} disabled={saving} onClick={salvarEdicao}>
-                {saving?'Salvando...':'💾 Salvar'}
-              </button>
+
+            <div style={{display:'flex',gap:8,padding:'12px 20px',borderTop:'1px solid #f0f4f1',flexShrink:0}}>
+              <button style={{...sG.btn,background:'#f4f8f5',color:'#6b8070',flex:1}} onClick={resetEdit}>Cancelar</button>
+              <button style={{...sG.btn,background:'#111a14',flex:1}} onClick={()=>gerarPDF(editModal, editFotoMapa, editObsFotos)}>📄 PDF</button>
+              <button style={{...sG.btn,flex:2,opacity:saving?.6:1}} disabled={saving} onClick={salvarEdicao}>{saving?'Salvando...':'💾 Salvar'}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL CONFIRMAR DELETE */}
+      {/* CONFIRM DELETE */}
       {confirmDelete && (
-        <div style={s.modalOverlay} onClick={()=>setConfirmDelete(null)}>
-          <div style={{...s.editModal,maxWidth:420}} onClick={e=>e.stopPropagation()}>
-            <div style={s.modalHeader}>
-              <span style={s.modalTitle}>🗑️ Confirmar exclusão</span>
-              <button style={s.modalClose} onClick={()=>setConfirmDelete(null)}>✕</button>
-            </div>
-            <div style={{padding:'24px 28px'}}>
-              <p style={{fontSize:15,color:'#111a14',lineHeight:1.6,marginBottom:8}}>
-                Deletar o relatório de <strong>{confirmDelete.cliente}</strong>?
-              </p>
-              <p style={{fontSize:13,color:'#c0392b'}}>Esta ação não pode ser desfeita.</p>
-            </div>
-            <div style={{...s.modalFooter,gap:10}}>
-              <button style={{...s.createBtn,background:'#f4f8f5',color:'#6b8070',flex:1}} onClick={()=>setConfirmDelete(null)}>Cancelar</button>
-              <button style={{...s.createBtn,background:'#c0392b',flex:1}} onClick={()=>deletarRelatorio(confirmDelete.id)}>Deletar</button>
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+          <div style={{background:'#fff',borderRadius:16,width:'100%',maxWidth:380,padding:24,boxShadow:'0 20px 60px rgba(0,0,0,.15)'}}>
+            <div style={{fontFamily:"'Syne',sans-serif",fontSize:17,fontWeight:700,marginBottom:10}}>🗑️ Confirmar exclusão</div>
+            <p style={{fontSize:14,marginBottom:6}}>Deletar relatório de <strong>{confirmDelete.cliente}</strong>?</p>
+            <p style={{fontSize:12,color:'#c0392b',marginBottom:18}}>Esta ação não pode ser desfeita.</p>
+            <div style={{display:'flex',gap:10}}>
+              <button style={{...sG.btn,background:'#f4f8f5',color:'#6b8070',flex:1}} onClick={()=>setConfirmDelete(null)}>Cancelar</button>
+              <button style={{...sG.btn,background:'#c0392b',flex:1}} onClick={()=>deletarRelatorio(confirmDelete.id)}>Deletar</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* TOAST */}
-      {toast && (
-        <div style={{...s.toast,background:toast.type==='error'?'#c0392b':'#111a14'}}>
-          {toast.msg}
-        </div>
-      )}
+      {toast && <div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:toast.type==='error'?'#c0392b':'#111a14',color:'#fff',padding:'12px 24px',borderRadius:100,fontSize:13,fontWeight:500,zIndex:400,whiteSpace:'nowrap',borderBottom:'3px solid #f0c040',boxShadow:'0 4px 20px rgba(0,0,0,.2)'}}>{toast.msg}</div>}
     </div>
   )
 }
 
-function ExistingPhoto({ supabase, path, bucket, label, small }) {
+function SectionTitle({ children }) {
+  return <div style={{fontSize:10,fontWeight:700,color:'#1a7a4a',letterSpacing:1,marginBottom:8,paddingBottom:4,borderBottom:'1px solid #e8f5ee',fontFamily:"'Syne',sans-serif"}}>{children}</div>
+}
+
+function StoragePhoto({ supabase, path, bucket, small }) {
   const [url, setUrl] = useState(null)
   const [loading, setLoading] = useState(true)
-
   useEffect(() => {
     if (!path) return
-    setLoading(true)
     supabase.storage.from(bucket).createSignedUrl(path, 3600).then(({ data, error }) => {
       if (!error && data?.signedUrl) setUrl(data.signedUrl)
       setLoading(false)
     })
   }, [path, bucket, supabase])
-
-  async function handleDownload(e) {
-    e.stopPropagation()
-    if (!url) return
-    try {
-      const res = await fetch(url)
-      const blob = await res.blob()
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = path.split('/').pop() || 'foto.jpg'
-      a.click()
-      URL.revokeObjectURL(a.href)
-    } catch { window.open(url, '_blank') }
-  }
-
-  if (loading) return <div style={{fontSize:11,color:'#6b8070',padding:'8px 0'}}>⏳ carregando foto...</div>
-  if (!url) return <div style={{fontSize:11,color:'#c0392b',padding:'8px 0'}}>⚠️ Foto não encontrada</div>
-
+  if (loading) return <div style={{fontSize:10,color:'#6b8070',padding:'8px 0'}}>⏳ carregando...</div>
+  if (!url) return <div style={{fontSize:10,color:'#c0392b'}}>⚠️ não encontrada</div>
   return (
-    <div style={{position:'relative'}}>
-      <img src={url} alt="foto" style={{width:'100%', maxHeight: small?60:130, objectFit:'cover', borderRadius:8, display:'block'}} />
+    <div>
+      <img src={url} alt="foto" style={{width:'100%',maxHeight:small?60:120,objectFit:'cover',borderRadius:8,display:'block'}} />
       {!small && (
         <div style={{display:'flex',gap:6,marginTop:6}}>
-          <a href={url} target="_blank" rel="noreferrer"
-            style={{flex:1,background:'#e8f5ee',color:'#1a7a4a',borderRadius:6,padding:'5px 8px',fontSize:11,textDecoration:'none',textAlign:'center',cursor:'pointer'}}
-            onClick={e=>e.stopPropagation()}>
-            🔍 Ver
-          </a>
-          <button
-            style={{flex:1,background:'#185fa5',color:'#fff',border:'none',borderRadius:6,padding:'5px 8px',fontSize:11,cursor:'pointer'}}
-            onClick={handleDownload}>
-            ⬇ Baixar
-          </button>
+          <a href={url} target="_blank" rel="noreferrer" style={{flex:1,background:'#e8f5ee',color:'#1a7a4a',borderRadius:6,padding:'5px',fontSize:11,textDecoration:'none',textAlign:'center'}} onClick={e=>e.stopPropagation()}>🔍 Ver</a>
+          <button style={{flex:1,background:'#185fa5',color:'#fff',border:'none',borderRadius:6,padding:'5px',fontSize:11,cursor:'pointer'}} onClick={async e=>{
+            e.stopPropagation()
+            try{const r=await fetch(url);const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='foto.jpg';a.click();URL.revokeObjectURL(a.href)}
+            catch{window.open(url,'_blank')}
+          }}>⬇ Baixar</button>
         </div>
       )}
-      <div style={{fontSize:10,color:'#6b8070',marginTop:4}}>Clique na área acima para trocar a foto</div>
+      {!small && <div style={{fontSize:10,color:'#6b8070',marginTop:4}}>Clique na área para trocar</div>}
     </div>
   )
 }
 
 function DetailCol({ title, items }) {
+  const valid = items.filter(([,v])=>v&&v!=='—')
+  if (!valid.length) return null
   return (
-    <div style={{flex:1,minWidth:160}}>
-      <div style={{fontSize:10,fontWeight:700,color:'#1a7a4a',letterSpacing:1,marginBottom:8,fontFamily:"'Syne',sans-serif"}}>{title.toUpperCase()}</div>
-      {items.map(([l,v])=> v ? (
-        <div key={l} style={{display:'flex',gap:6,marginBottom:4,fontSize:12}}>
-          <span style={{color:'#6b8070',minWidth:80,flexShrink:0}}>{l}:</span>
+    <div style={{minWidth:120,flex:1}}>
+      <div style={{fontSize:10,fontWeight:700,color:'#1a7a4a',letterSpacing:1,marginBottom:5,fontFamily:"'Syne',sans-serif"}}>{title.toUpperCase()}</div>
+      {valid.map(([l,v])=>(
+        <div key={l} style={{display:'flex',gap:4,marginBottom:3,fontSize:11}}>
+          <span style={{color:'#6b8070',minWidth:65,flexShrink:0}}>{l}:</span>
           <span style={{color:'#111a14',wordBreak:'break-word'}}>{v}</span>
         </div>
-      ) : null)}
+      ))}
     </div>
   )
 }
 
-const s = {
-  shell:{display:'flex',flexDirection:'column',minHeight:'100vh',background:'#f4f8f5',fontFamily:"'DM Sans',sans-serif"},
-  mobileHeader:{background:'#111a14',padding:'12px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50},
-  sidebar:{width:240,background:'#111a14',display:'flex',flexDirection:'column',position:'sticky',top:0,height:'100vh',flexShrink:0},
-  sidebarTop:{padding:'28px 20px 20px'},
-  logo:{display:'flex',alignItems:'center',gap:10,marginBottom:4},
-  logoTxt:{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:700,color:'#fff',letterSpacing:-0.5},
-  logoSub:{fontSize:11,color:'#4a6e56',letterSpacing:1,fontFamily:"'Syne',sans-serif"},
-  nav:{padding:'8px 12px',flex:1},
-  navBtn:{display:'flex',alignItems:'center',gap:10,width:'100%',background:'transparent',border:'none',borderRadius:10,padding:'10px 12px',cursor:'pointer',color:'#8aad94',fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:500,marginBottom:4},
-  navBtnActive:{background:'#1a3a22',color:'#fff'},
-  navCount:{background:'#1e3828',color:'#6b8070',fontSize:11,fontWeight:600,padding:'2px 7px',borderRadius:20,fontFamily:"'Syne',sans-serif"},
-  sideStats:{padding:'12px 20px',borderTop:'1px solid #1e3828',borderBottom:'1px solid #1e3828',display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8},
-  statItem:{textAlign:'center'},
-  statVal:{display:'block',fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:700,color:'#2da05e'},
-  statLbl:{display:'block',fontSize:10,color:'#4a6e56',marginTop:2},
-  sidebarBottom:{padding:'16px 20px'},
-  userChip:{display:'flex',alignItems:'center',gap:10,marginBottom:12},
-  userAvatar:{width:32,height:32,borderRadius:'50%',background:'#1a7a4a',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:14,fontFamily:"'Syne',sans-serif",flexShrink:0},
-  logoutBtn:{width:'100%',background:'transparent',border:'1px solid #1e3828',color:'#4a6e56',borderRadius:8,padding:'8px',fontSize:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"},
-  main:{flex:1,overflow:'auto',display:'flex',flexDirection:'column'},
-  page:{padding:'24px 28px',maxWidth:1400,width:'100%'},
-  pageHeader:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24},
-  pageTitle:{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:700,color:'#111a14'},
-  pageSub:{fontSize:13,color:'#6b8070',marginTop:4},
-  filterBar:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:20,background:'#fff',padding:'16px',borderRadius:12,border:'1px solid #d0e4d8',alignItems:'center'},
-  filterInput:{border:'1px solid #d0e4d8',borderRadius:8,padding:'8px 12px',fontSize:13,fontFamily:"'DM Sans',sans-serif",outline:'none',color:'#111a14',background:'#f4f8f5',minWidth:140},
-  clearBtn:{background:'none',border:'1px solid #e0b0a8',color:'#c0392b',borderRadius:8,padding:'8px 14px',fontSize:12,cursor:'pointer',whiteSpace:'nowrap'},
-  tableWrap:{background:'#fff',borderRadius:12,border:'1px solid #d0e4d8',overflow:'hidden'},
-  table:{width:'100%',borderCollapse:'collapse'},
-  thead:{background:'#f4f8f5'},
-  th:{padding:'12px 16px',textAlign:'left',fontSize:11,fontWeight:700,color:'#6b8070',letterSpacing:0.5,fontFamily:"'Syne',sans-serif",borderBottom:'1px solid #d0e4d8',whiteSpace:'nowrap'},
-  tr:{cursor:'pointer',transition:'background .1s','&:hover':{background:'#f9fbfa'}},
-  td:{padding:'12px 16px',fontSize:13,color:'#111a14',borderBottom:'1px solid #f0f4f1',verticalAlign:'middle'},
-  statusPill:{display:'inline-block',fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20},
-  iconBtn:{background:'none',border:'none',cursor:'pointer',fontSize:16,padding:'4px',borderRadius:6},
-  detailRow:{display:'flex',gap:24,padding:'20px 24px'},
-  usersLayout:{display:'flex',gap:24,alignItems:'flex-start'},
-  createCard:{background:'#fff',borderRadius:12,border:'1px solid #d0e4d8',padding:'24px',width:300,flexShrink:0},
-  createCardTitle:{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,color:'#111a14',marginBottom:20},
-  formLabel:{fontSize:11,fontWeight:600,color:'#6b8070',letterSpacing:0.5,marginBottom:5,fontFamily:"'Syne',sans-serif"},
-  formInput:{width:'100%',border:'1px solid #d0e4d8',borderRadius:8,padding:'10px 12px',fontSize:14,fontFamily:"'DM Sans',sans-serif",outline:'none',color:'#111a14',background:'#f4f8f5',appearance:'none'},
-  createBtn:{background:'#1a7a4a',color:'#fff',border:'none',borderRadius:10,padding:'12px',fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:600,cursor:'pointer',width:'100%'},
-  avatar:{width:34,height:34,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:15,fontFamily:"'Syne',sans-serif",flexShrink:0},
-  rolePill:{display:'inline-block',fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20},
-  toggleUserBtn:{border:'none',borderRadius:8,padding:'6px 14px',fontSize:12,fontWeight:500,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"},
-  modalOverlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:24},
-  editModal:{background:'#fff',borderRadius:16,width:'100%',maxWidth:860,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,.15)'},
-  modalHeader:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'20px 28px',borderBottom:'1px solid #f0f4f1'},
-  modalTitle:{fontFamily:"'Syne',sans-serif",fontSize:18,fontWeight:700,color:'#111a14'},
-  modalClose:{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#6b8070'},
-  modalBody:{padding:'24px 28px',overflowY:'auto',flex:1},
-  modalGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16},
-  modalFooter:{display:'flex',gap:12,padding:'16px 28px',borderTop:'1px solid #f0f4f1'},
-  editSection:{fontSize:11,fontWeight:700,color:'#1a7a4a',letterSpacing:1,fontFamily:"'Syne',sans-serif",paddingBottom:6,borderBottom:'1px solid #e8f5ee'},
-  toast:{position:'fixed',bottom:32,left:'50%',transform:'translateX(-50%)',color:'#fff',padding:'12px 28px',borderRadius:100,fontSize:13,fontWeight:500,zIndex:200,whiteSpace:'nowrap',borderBottom:'3px solid #f0c040',boxShadow:'0 4px 20px rgba(0,0,0,.2)'},
+// Estilos globais compartilhados
+const sG = {
+  td: {padding:'11px 14px',fontSize:13,color:'#111a14',borderBottom:'1px solid #f0f4f1',verticalAlign:'middle'},
+  iconBtn: {background:'none',border:'none',cursor:'pointer',fontSize:15,padding:'3px 4px',borderRadius:6},
+  label: {fontSize:11,fontWeight:600,color:'#6b8070',letterSpacing:.5,marginBottom:4,fontFamily:"'Syne',sans-serif"},
+  input: {width:'100%',border:'1px solid #d0e4d8',borderRadius:8,padding:'9px 11px',fontSize:14,fontFamily:"'DM Sans',sans-serif",outline:'none',color:'#111a14',background:'#f4f8f5',appearance:'none',WebkitAppearance:'none'},
+  btn: {background:'#1a7a4a',color:'#fff',border:'none',borderRadius:10,padding:'11px',fontFamily:"'Syne',sans-serif",fontSize:13,fontWeight:600,cursor:'pointer',width:'100%'},
 }

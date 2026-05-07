@@ -72,10 +72,15 @@ export async function gerarPDFRelatorio(rel, { supabase, localObsFotos, localFot
 
   // Identificação
   pdfSec('Identificação')
-  pdfRow('Cliente', rel.cliente, true); pdfRow('Fazenda', rel.fazenda, false)
-  pdfRow('Piloto', rel.piloto_nome, true); pdfRow('Drone', rel.drone, false)
+  pdfRow('Cliente', rel.cliente, true)
+  pdfRow('Fazenda', rel.fazenda, false)
+  if (rel.area_ha) pdfRow('Área', rel.area_ha + ' ha', true)
+  pdfRow('Piloto', rel.piloto_nome, false)
+  pdfRow('Drone', rel.drone, true)
   const produtos = rel.produtos || []
   produtos.forEach((p, i) => pdfRow('Produto ' + (i + 1), p, i % 2 === 0))
+  if (rel.tamanho_gota) pdfRow('Tamanho da Gota', rel.tamanho_gota, produtos.length%2===0)
+  if (rel.velocidade_drone) pdfRow('Vel. Drone', rel.velocidade_drone, true)
   y += 4
 
   // Localização
